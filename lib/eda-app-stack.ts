@@ -24,8 +24,17 @@ export class EDAAppStack extends cdk.Stack {
     });
         // Integration infrastructure
 
+    // NEW
+    const dlq = new sqs.Queue(this, "img-dlq", {
+      receiveMessageWaitTime: cdk.Duration.seconds(6),
+    });
+    // UPDATE
     const imageProcessQueue = new sqs.Queue(this, "img-process-q", {
       receiveMessageWaitTime: cdk.Duration.seconds(6),
+      deadLetterQueue: {
+        queue: dlq,
+        maxReceiveCount: 1,
+      },
     });
 
     const mailerQ = new sqs.Queue(this, "mailer-q", {
@@ -44,7 +53,7 @@ export class EDAAppStack extends cdk.Stack {
 
     // Lambda functions
 
-     const persistImageDataFn = new lambdanode.NodejsFunction(
+    const persistImageDataFn = new lambdanode.NodejsFunction(
       this,
       "PersistImageDataFn",
       {
@@ -60,13 +69,23 @@ export class EDAAppStack extends cdk.Stack {
       }
     );
 
-
     const mailerFn = new lambdanode.NodejsFunction(this, "mailer", {
       runtime: lambda.Runtime.NODEJS_22_X,
       memorySize: 1024,
       timeout: cdk.Duration.seconds(3),
       entry: `${__dirname}/../lambdas/mailer.ts`,
     });
+
+    const rejectedFileFn = new lambdanode.NodejsFunction(
+      this,
+      "RejectedFileFn",
+      {
+        runtime: lambda.Runtime.NODEJS_22_X,
+        entry: `${__dirname}/../lambdas/rejectedFile.ts`,
+        timeout: cdk.Duration.seconds(15),
+        memorySize: 128,
+      }
+    );
 
     // S3 --> SNS
     imagesBucket.addEventNotification(
@@ -91,8 +110,14 @@ export class EDAAppStack extends cdk.Stack {
       maxBatchingWindow: cdk.Duration.seconds(5),
     });
 
+    const rejectedFileEventSource = new events.SqsEventSource(dlq, {
+      batchSize: 5,
+      maxBatchingWindow: cdk.Duration.seconds(10),
+    });
+
     persistImageDataFn.addEventSource(newImageEventSource);
     mailerFn.addEventSource(newImageMailEventSource);
+    rejectedFileFn.addEventSource(rejectedFileEventSource);
 
     // Permissions
 
@@ -112,7 +137,7 @@ export class EDAAppStack extends cdk.Stack {
     imagesTable.grantReadWriteData(persistImageDataFn);
 
     // Output
-    
+
     new cdk.CfnOutput(this, "bucketName", {
       value: imagesBucket.bucketName,
     });
